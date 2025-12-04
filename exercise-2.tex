@@ -54,7 +54,7 @@ GO
 
 
 \subsection{2a}
-\begin{lstlisting}[language=sql, caption=Create database]
+\begin{lstlisting}[language=sql]
 ALTER TABLE Room 
 ADD CONSTRAINT CHK_DoubleRoomPrice
 CHECK ((type = 'Double' AND price > 100) OR type <> 'Double')
@@ -66,7 +66,7 @@ GO
 
 
 \subsection{2b}
-\begin{lstlisting}[language=sql, caption=Create database]
+\begin{lstlisting}[language=sql]
 CREATE TRIGGER trg_CheckDoublePriceVsSingle
 on Room
 after INSERT, UPDATE
@@ -92,7 +92,7 @@ GO
 
 
 \subsection{2c}
-\begin{lstlisting}[language=sql, caption=Create database]
+\begin{lstlisting}[language=sql]
 CREATE TRIGGER trg_CheckGuessOverlap
 ON Booking
 after UPDATE, INSERT
@@ -117,7 +117,7 @@ Go
 
 
 \subsection{2d}
-\begin{lstlisting}[language=sql, caption=Create database]
+\begin{lstlisting}[language=sql]
 CREATE TRIGGER trg_CheckMaxAdults
 ON Booking
 AFTER INSERT, UPDATE
@@ -139,15 +139,39 @@ GO
 
 
 \subsection{2e}
-\begin{lstlisting}[language=sql, caption=Create database]
+\begin{lstlisting}[language=sql]
+CREATE TRIGGER trg_UpdateGuestTotalAmount
+ON Booking
+after INSERT, UPDATE, DELETE
+AS
+BEGIN
+    SET NOCOUNT ON;
 
+    DECLARE @AffectedGuests Table (guestNo VARCHAR(10));
+
+    INSERT into @AffectedGuests
+    SELECT guestNo from inserted
+    UNION
+    SELECT guestNo from deleted;
+
+    UPDATE g
+    SET TotalAmount = ISNULL((
+        SElect sum(r.price * DATEDIFF(DAY, b.dateFrom, b.dateTo))
+        From Booking b  
+        Join Room r on b.hotelNo = r.hotelNo and b.roomNo = r.roomNo
+        where b.guestNo = g.guestNo
+    ), 0)
+    From Guest g
+    WHERE g.guestNo IN (SELECT guestNo from @AffectedGuests);
+END;
+GO
 \end{lstlisting}
 
 
 
 
 \subsection{2f}
-\begin{lstlisting}[language=sql, caption=Create database]
+\begin{lstlisting}[language=sql]
 CREATE TRIGGER trg_InsertLondonHotelRoom
 ON LondonHotelRoom
 INSTEAD OF INSERT
