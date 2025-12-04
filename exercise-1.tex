@@ -282,3 +282,434 @@ See figure \ref{fig:view_a}, \ref{fig:view_b}, \ref{fig:view_c}, \ref{fig:view_d
     \caption{Result of VIEW\_G}
     \label{fig:view_g}
 \end{figure}
+
+\pagebreak
+\text{}
+\pagebreak
+
+\subsection{TRIGGER, FUNCTION, STORE PROCEDURE, CURSOR}
+
+\begin{enumerate}[label=(\alph*)]
+    \item Create a database trigger
+    
+\begin{lstlisting}[language=sql]
+USE COMPANY;
+GO
+
+-- 1. The supervisor of an employee must be older than the employee
+CREATE TRIGGER TR_EMPLOYEE_SUPERVISOR_AGE
+ON EMPLOYEE
+FOR INSERT, UPDATE
+AS
+BEGIN
+    IF EXISTS (
+        SELECT *
+        FROM inserted I
+        JOIN EMPLOYEE S ON I.SUPER_SSN = S.SSN
+        WHERE I.BDATE <= S.BDATE
+    )
+    BEGIN
+        RAISERROR('Supervisor must be older than the employee.', 16, 1);
+        ROLLBACK TRANSACTION;
+    END
+END;
+GO
+
+-- 2. The salary of an employee cannot be greater than the salary of his/her supervisor
+CREATE TRIGGER TR_EMPLOYEE_SUPERVISOR_SALARY
+ON EMPLOYEE
+FOR INSERT, UPDATE
+AS
+BEGIN
+    IF EXISTS (
+        SELECT *
+        FROM inserted I
+        JOIN EMPLOYEE S ON I.SUPER_SSN = S.SSN
+        WHERE I.SALARY > S.SALARY
+    )
+    BEGIN
+        RAISERROR('Employee salary cannot be greater than supervisor salary.', 16, 1);
+        ROLLBACK TRANSACTION;
+    END
+END;
+GO
+
+-- 3. The salary of an employee can only increase
+-- 4. When increasing salary, the amount must not be more than 20% of current salary
+CREATE TRIGGER TR_EMPLOYEE_SALARY_INCREASE
+ON EMPLOYEE
+FOR UPDATE
+AS
+BEGIN
+    -- Check if salary decreased
+    IF EXISTS (
+        SELECT *
+        FROM inserted I
+        JOIN deleted D ON I.SSN = D.SSN
+        WHERE I.SALARY < D.SALARY
+    )
+    BEGIN
+        RAISERROR('Employee salary can only increase, not decrease.', 16, 1);
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END
+
+    -- Check if salary increase exceeds 20%
+    IF EXISTS (
+        SELECT *
+        FROM inserted I
+        JOIN deleted D ON I.SSN = D.SSN
+        WHERE I.SALARY > D.SALARY * 1.20
+    )
+    BEGIN
+        RAISERROR('Salary increase cannot exceed 20%% of current salary.', 16, 1);
+        ROLLBACK TRANSACTION;
+    END
+END;
+GO
+
+-- 5. An employee works on at most 4 projects
+CREATE TRIGGER TR_WORKS_ON_PROJECT_LIMIT
+ON WORKS_ON
+FOR INSERT
+AS
+BEGIN
+    IF EXISTS (
+        SELECT ESSN
+        FROM WORKS_ON
+        WHERE ESSN IN (SELECT ESSN FROM inserted)
+        GROUP BY ESSN
+        HAVING COUNT(*) > 4
+    )
+    BEGIN
+        RAISERROR('An employee can work on at most 4 projects.', 16, 1);
+        ROLLBACK TRANSACTION;
+    END
+END;
+GO
+
+-- 6. The maximum number of hours an employee can work on all projects per week is 56
+CREATE TRIGGER TR_WORKS_ON_WEEKLY_HOURS
+ON WORKS_ON
+FOR INSERT, UPDATE
+AS
+BEGIN
+    IF EXISTS (
+        SELECT ESSN
+        FROM WORKS_ON
+        WHERE ESSN IN (SELECT ESSN FROM inserted)
+        GROUP BY ESSN
+        HAVING SUM(HOURS) > 56
+    )
+    BEGIN
+        RAISERROR('Total weekly hours cannot exceed 56 hours per employee.', 16, 1);
+        ROLLBACK TRANSACTION;
+    END
+END;
+GO
+
+-- 7. The location of a project must be one of the locations of its department
+CREATE TRIGGER TR_PROJECT_LOCATION_VALIDATION
+ON PROJECT
+FOR INSERT, UPDATE
+AS
+BEGIN
+    IF EXISTS (
+        SELECT *
+        FROM inserted I
+        WHERE NOT EXISTS (
+            SELECT *
+            FROM DEPT_LOCATIONS DL
+            WHERE DL.DNUMBER = I.DNUM
+            AND DL.DLOCATION = I.PLOCATION
+        )
+    )
+    BEGIN
+        RAISERROR('Project location must be one of the department locations.', 16, 1);
+        ROLLBACK TRANSACTION;
+    END
+END;
+GO
+
+-- 8. The salary of a department manager must be higher than other employees in that department
+CREATE TRIGGER TR_EMPLOYEE_MANAGER_SALARY
+ON EMPLOYEE
+FOR INSERT, UPDATE
+AS
+BEGIN
+    -- Check if any non-manager employee has salary >= manager's salary
+    IF EXISTS (
+        SELECT *
+        FROM inserted I
+        JOIN DEPARTMENT D ON I.DNO = D.DNUMBER
+        WHERE I.SSN != D.MGR_SSN
+        AND I.SALARY >= (
+            SELECT SALARY
+            FROM EMPLOYEE
+            WHERE SSN = D.MGR_SSN
+        )
+    )
+    BEGIN
+        RAISERROR('Department manager must have the highest salary in the department.', 16, 1);
+        ROLLBACK TRANSACTION;
+    END
+
+    -- Check if a manager's salary is being set lower than any employee in their department
+    IF EXISTS (
+        SELECT *
+        FROM inserted I
+        JOIN DEPARTMENT D ON I.SSN = D.MGR_SSN
+        WHERE EXISTS (
+            SELECT *
+            FROM EMPLOYEE E
+            WHERE E.DNO = D.DNUMBER
+            AND E.SSN != D.MGR_SSN
+            AND E.SALARY >= I.SALARY
+        )
+    )
+    BEGIN
+        RAISERROR('Department manager must have the highest salary in the department.', 16, 1);
+        ROLLBACK TRANSACTION;
+    END
+END;
+GO
+
+-- 9. Only department managers can work less than 5 hours on a project
+CREATE TRIGGER TR_WORKS_ON_MINIMUM_HOURS
+ON WORKS_ON
+FOR INSERT, UPDATE
+AS
+BEGIN
+    IF EXISTS (
+        SELECT *
+        FROM inserted I
+        WHERE I.HOURS < 5
+        AND NOT EXISTS (
+            SELECT *
+            FROM DEPARTMENT D
+            WHERE D.MGR_SSN = I.ESSN
+        )
+    )
+    BEGIN
+        RAISERROR('Only department managers can work less than 5 hours on a project.', 16, 1);
+        ROLLBACK TRANSACTION;
+    END
+END;
+GO
+\end{lstlisting}
+
+    \item Alter table Department
+\begin{lstlisting}[language=sql]
+USE COMPANY;
+GO
+
+-- Add Num_of_Emp column to Department table
+ALTER TABLE DEPARTMENT
+ADD Num_of_Emp INT;
+GO
+
+-- Create a trigger to automatically calculate Num_of_Emp when employees are inserted
+CREATE TRIGGER trg_UpdateNumOfEmp_Insert
+ON EMPLOYEE
+AFTER INSERT
+AS
+BEGIN
+    UPDATE DEPARTMENT
+    SET Num_of_Emp = (
+        SELECT COUNT(*)
+        FROM EMPLOYEE
+        WHERE DNO = DEPARTMENT.DNUMBER
+    )
+    WHERE DNUMBER IN (SELECT DISTINCT DNO FROM inserted);
+END;
+GO
+
+-- Create a trigger to automatically calculate Num_of_Emp when employees are updated
+CREATE TRIGGER trg_UpdateNumOfEmp_Update
+ON EMPLOYEE
+AFTER UPDATE
+AS
+BEGIN
+    UPDATE DEPARTMENT
+    SET Num_of_Emp = (
+        SELECT COUNT(*)
+        FROM EMPLOYEE
+        WHERE DNO = DEPARTMENT.DNUMBER
+    )
+    WHERE DNUMBER IN (
+        SELECT DISTINCT DNO FROM inserted
+        UNION
+        SELECT DISTINCT DNO FROM deleted
+    );
+END;
+GO
+
+-- Create a trigger to automatically calculate Num_of_Emp when employees are deleted
+CREATE TRIGGER trg_UpdateNumOfEmp_Delete
+ON EMPLOYEE
+AFTER DELETE
+AS
+BEGIN
+    UPDATE DEPARTMENT
+    SET Num_of_Emp = (
+        SELECT COUNT(*)
+        FROM EMPLOYEE
+        WHERE DNO = DEPARTMENT.DNUMBER
+    )
+    WHERE DNUMBER IN (SELECT DISTINCT DNO FROM deleted);
+END;
+GO
+
+-- Initialize Num_of_Emp with current employee counts
+UPDATE DEPARTMENT
+SET Num_of_Emp = (
+    SELECT COUNT(*)
+    FROM EMPLOYEE
+    WHERE DNO = DEPARTMENT.DNUMBER
+);
+GO
+\end{lstlisting}
+
+    \item Write a function
+\begin{lstlisting}[language=sql]
+USE COMPANY;
+GO
+
+-- Function to return the total number of projects for a given employee ID
+CREATE FUNCTION dbo.GetEmployeeProjectCount(@EmployeeSSN CHAR(9))
+RETURNS INT
+AS
+BEGIN
+    DECLARE @ProjectCount INT;
+    
+    SELECT @ProjectCount = COUNT(*)
+    FROM WORKS_ON
+    WHERE ESSN = @EmployeeSSN;
+    
+    RETURN @ProjectCount;
+END;
+GO
+
+-- Example usage:
+-- SELECT dbo.GetEmployeeProjectCount('123456789') AS TotalProjects;
+\end{lstlisting}
+    \item Create a stored procedure
+\begin{lstlisting}[language=sql]
+USE COMPANY;
+GO
+
+-- Stored procedure to print SSN, Full name, Department name, and annual salary of all employees
+CREATE PROCEDURE sp_GetEmployeeDetails
+AS
+BEGIN
+    SELECT 
+        E.SSN,
+        CONCAT(E.FNAME, ' ', E.MINIT, ' ', E.LNAME) AS FullName,
+        D.DNAME AS DepartmentName,
+        E.SALARY * 12 AS AnnualSalary
+    FROM EMPLOYEE E
+    INNER JOIN DEPARTMENT D ON E.DNO = D.DNUMBER
+    ORDER BY E.SSN;
+END;
+GO
+\end{lstlisting}
+    \item Write a trigger
+\begin{lstlisting}[language=sql]
+USE COMPANY;
+GO
+
+-- Create log table to track salary changes
+CREATE TABLE SALARY_LOG (
+    SSN CHAR(9),
+    CONTENT VARCHAR(200),
+    LOG_DATE DATE,
+    FOREIGN KEY (SSN) REFERENCES EMPLOYEE(SSN)
+);
+GO
+
+-- Create trigger to log salary changes when new salary > 50000
+CREATE TRIGGER trg_LogSalaryChanges
+ON EMPLOYEE
+AFTER INSERT, UPDATE
+AS
+BEGIN
+    -- Log for UPDATE operations
+    IF EXISTS (SELECT * FROM inserted i INNER JOIN deleted d ON i.SSN = d.SSN)
+    BEGIN
+        INSERT INTO SALARY_LOG (SSN, CONTENT, LOG_DATE)
+        SELECT 
+            i.SSN,
+            'SALARY UPDATE FROM ' + CAST(d.SALARY AS VARCHAR(20)) + ' TO ' + CAST(i.SALARY AS VARCHAR(20)),
+            CAST(GETDATE() AS DATE)
+        FROM inserted i
+        INNER JOIN deleted d ON i.SSN = d.SSN
+        WHERE i.SALARY > 50000 AND i.SALARY != d.SALARY;
+    END
+    
+    -- Log for INSERT operations
+    ELSE
+    BEGIN
+        INSERT INTO SALARY_LOG (SSN, CONTENT, LOG_DATE)
+        SELECT 
+            SSN,
+            'SALARY INSERTED WITH VALUE ' + CAST(SALARY AS VARCHAR(20)),
+            CAST(GETDATE() AS DATE)
+        FROM inserted
+        WHERE SALARY > 50000;
+    END
+END;
+GO
+\end{lstlisting}
+
+    \item Write a stored procedure
+\begin{lstlisting}[language=sql]
+USE COMPANY;
+GO
+
+-- Stored procedure to print salary levels for each employee
+CREATE PROCEDURE PrintEmployeeSalaryLevels
+AS
+BEGIN
+    DECLARE @SSN CHAR(9);
+    DECLARE @FNAME VARCHAR(15);
+    DECLARE @MINIT CHAR;
+    DECLARE @LNAME VARCHAR(15);
+    DECLARE @SALARY DECIMAL(10,2);
+    DECLARE @LEVEL VARCHAR(10);
+
+    -- Cursor to iterate through employees
+    DECLARE employee_cursor CURSOR FOR
+    SELECT SSN, FNAME, MINIT, LNAME, SALARY
+    FROM EMPLOYEE
+    ORDER BY SSN;
+
+    OPEN employee_cursor;
+
+    FETCH NEXT FROM employee_cursor INTO @SSN, @FNAME, @MINIT, @LNAME, @SALARY;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        -- Determine salary level
+        IF @SALARY < 20000
+            SET @LEVEL = 'level C';
+        ELSE IF @SALARY BETWEEN 20000 AND 50000
+            SET @LEVEL = 'level B';
+        ELSE
+            SET @LEVEL = 'level A';
+
+        -- Print the result
+        PRINT @SSN + ', ' + @FNAME + ' ' + ISNULL(@MINIT, '') + ' ' + @LNAME + ', ' + @LEVEL;
+
+        FETCH NEXT FROM employee_cursor INTO @SSN, @FNAME, @MINIT, @LNAME, @SALARY;
+    END;
+
+    CLOSE employee_cursor;
+    DEALLOCATE employee_cursor;
+END;
+GO
+
+-- Execute the stored procedure
+EXEC PrintEmployeeSalaryLevels;
+GO
+\end{lstlisting}
+\end{enumerate}
